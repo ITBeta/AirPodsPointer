@@ -12,7 +12,8 @@ enum PressKind { case single, double, triple }
 /// 所以本 App 循環播放一段靜音音頻，讓自己成為 Now Playing，再通過 MPRemoteCommandCenter 接收命令。
 final class PressGestureSource {
     var onPress: ((PressKind) -> Void)?
-    private var player: AVAudioPlayer?
+    private var player: AVAudioPlayer?        // 主靜音播放器：持續循環，永不暫停
+    private var blipPlayer: AVAudioPlayer?    // 奪回用：每次重新 play 一下，產生「開始播放」事件
     private var lastSingle: TimeInterval = 0
     private var targets: [(MPRemoteCommand, Any)] = []
     private var reclaimTimer: Timer?
@@ -34,17 +35,19 @@ final class PressGestureSource {
         for (cmd, token) in targets { cmd.removeTarget(token) }
         targets.removeAll()
         player?.stop()
+        blipPlayer?.stop()
         MPNowPlayingInfoCenter.default().playbackState = .stopped
         MPNowPlayingInfoCenter.default().nowPlayingInfo = nil
     }
 
     /// 其他 App（Music、Spotify、瀏覽器視頻）可能搶走 Now Playing，調用此方法重新奪回。
+    /// 重新成為 Now Playing，但不中斷主音頻（中斷音頻會讓系統停止推送耳機運動數據）。
     func reclaim() {
-        guard let p = player else { return }
-        // 暫停再播放 = 重新「開始播放」，系統會把本 App 重新視為最近的 Now Playing。
-        p.pause()
-        p.currentTime = 0
-        p.play()
+        if let p = player, !p.isPlaying { p.play() }   // 被系統打斷時恢復
+        if let b = blipPlayer {
+            b.currentTime = 0
+            b.play()   // 主播放器之外的一次新播放，主播放器保持連續
+        }
         publishNowPlaying()
     }
 
@@ -56,7 +59,7 @@ final class PressGestureSource {
             activationObserver = nil
         }
         guard autoReclaim else { return }
-        reclaimTimer = Timer.scheduledTimer(withTimeInterval: 3, repeats: true) { [weak self] _ in
+        reclaimTimer = Timer.scheduledTimer(withTimeInterval: 5, repeats: true) { [weak self] _ in
             self?.reclaim()
         }
         activationObserver = NSWorkspace.shared.notificationCenter.addObserver(
@@ -76,6 +79,12 @@ final class PressGestureSource {
             p.prepareToPlay()
             p.play()
             player = p
+
+            let b = try AVAudioPlayer(contentsOf: url)
+            b.numberOfLoops = 0
+            b.volume = 0.01
+            b.prepareToPlay()
+            blipPlayer = b
         } catch {
             NSLog("AirHeadMouse: cannot start silent playback: \(error)")
         }

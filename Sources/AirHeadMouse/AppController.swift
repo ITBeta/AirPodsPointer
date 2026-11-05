@@ -37,6 +37,7 @@ final class AppController: ObservableObject {
     private var permissionTimer: Timer?
     private var lastUIUpdate: Double = 0
     private var pending: LiveDiagnostics?
+    private var activationObserver: NSObjectProtocol?
 
     init() {
         let s = SettingsStore.load()
@@ -94,6 +95,15 @@ final class AppController: ObservableObject {
         presses.onPress = { [weak self] kind in self?.handle(press: kind) }
         presses.start()
         presses.autoReclaim = settings.autoReclaimMediaKeys
+
+        // 切換 App 時記錄並檢查頭部數據是否中斷。
+        activationObserver = NSWorkspace.shared.notificationCenter.addObserver(
+            forName: NSWorkspace.didActivateApplicationNotification, object: nil, queue: .main
+        ) { [weak self] note in
+            let app = note.userInfo?[NSWorkspace.applicationUserInfoKey] as? NSRunningApplication
+            self?.motion.noteEvent("切換到 \(app?.localizedName ?? "?")")
+            DispatchQueue.main.asyncAfter(deadline: .now() + 1) { self?.motion.nudge() }
+        }
     }
 
     func stop() {
@@ -101,6 +111,7 @@ final class AppController: ObservableObject {
         motion.stop()
         presses.stop()
         permissionTimer?.invalidate()
+        if let o = activationObserver { NSWorkspace.shared.notificationCenter.removeObserver(o) }
     }
 
     func toggleTracking() { setTracking(!trackingEnabled) }

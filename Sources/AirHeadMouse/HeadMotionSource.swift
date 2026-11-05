@@ -51,8 +51,8 @@ final class HeadMotionSource: NSObject, CMHeadphoneMotionManagerDelegate {
     private var startUptime: Double = 0
     private var lastSampleUptime: Double = 0
     private var lastRestartUptime: Double = -1000
-    private var autoRestarts = 0
-    private let maxAutoRestarts = 5
+    /// 自動重啟的最小間隔（指數退避：3 → 6 → 12 → 24 → 30 秒），收到樣本即重置。
+    private var restartBackoff: Double = 3
     private var hzWindowStart: Double = 0
     private var hzWindowCount = 0
 
@@ -107,15 +107,17 @@ final class HeadMotionSource: NSObject, CMHeadphoneMotionManagerDelegate {
     /// - Parameter manual: 用戶點擊按鈕觸發（不計入自動重啟次數）。
     func restart(manual: Bool = false) {
         guard !isRestarting else { return }
-        guard now - lastRestartUptime >= 10 else {
+        let minGap = manual ? 3 : restartBackoff
+        guard now - lastRestartUptime >= minGap else {
             if manual { diag.note = "剛剛已重啟，請稍等幾秒" }
             return
         }
-        if manual { autoRestarts = 0; diag.note = "" }
+        if manual { restartBackoff = 3 } else { restartBackoff = min(restartBackoff * 2, 30) }
+        diag.note = ""
         isRestarting = true
         lastRestartUptime = now
         diag.restarts += 1
-        event(manual ? "手動重啟" : "自動重啟（第 \(autoRestarts) 次）")
+        event(manual ? "手動重啟" : "自動重啟（下次最短間隔 \(Int(restartBackoff))s）")
 
         manager.stopDeviceMotionUpdates()
         updatesRequested = false
@@ -144,8 +146,10 @@ final class HeadMotionSource: NSObject, CMHeadphoneMotionManagerDelegate {
                          m.attitude.yaw, m.attitude.pitch, m.attitude.roll,
                          m.rotationRate.x, m.rotationRate.y, m.rotationRate.z))
         }
+        if status != .streaming && diag.sampleCount > 0 { event("數據恢復") }
         diag.sampleCount += 1
         lastSampleUptime = t
+        restartBackoff = 3
         hzWindowCount += 1
         if t - hzWindowStart >= 1 {
             diag.sampleHz = Double(hzWindowCount) / (t - hzWindowStart)
@@ -166,7 +170,7 @@ final class HeadMotionSource: NSObject, CMHeadphoneMotionManagerDelegate {
 
     private func startWatchdog() {
         guard watchdog == nil else { return }
-        watchdog = Timer.scheduledTimer(withTimeInterval: 2, repeats: true) { [weak self] _ in
+        watchdog = Timer.scheduledTimer(withTimeInterval: 1, repeats: true) { [weak self] _ in
             self?.checkHealth()
         }
     }
@@ -179,18 +183,19 @@ final class HeadMotionSource: NSObject, CMHeadphoneMotionManagerDelegate {
         if silentFor > 1 { diag.sampleHz = 0 }
 
         guard status != .notAuthorized, status != .unavailable, updatesRequested, !isRestarting else { return }
-        if status == .streaming && silentFor > 3 {
-            event("超過 3 秒沒有數據")
+        if status == .streaming && silentFor > 2 {
+            event("超過 2 秒沒有數據")
             status = .waitingForHeadphones
         }
-        // 推送已開啟、10 秒無任何樣本、距上次重啟超過 30 秒 → 自動重啟（最多 5 次）。
-        guard silentFor > 10, t - lastRestartUptime > 30 else { return }
-        if autoRestarts < maxAutoRestarts {
-            autoRestarts += 1
-            restart()
-        } else {
-            diag.note = "自動重啟已停止，請手動點「重啟頭部追蹤」"
-        }
+        // 推送已開啟但 2 秒無樣本 → 自動重啟（restart 內部按退避節流）。
+        if silentFor > 2 { restart() }
+    }
+
+    /// 外部提示（例如切換了 App）：若 1 秒內沒有新樣本，立即嘗試重啟。
+    func nudge() {
+        guard updatesRequested, !isRestarting,
+              status != .notAuthorized, status != .unavailable else { return }
+        if now - lastSampleUptime > 1 { restart() }
     }
 
     // MARK: 連接回調（只記錄狀態，不重啟）
@@ -214,6 +219,9 @@ final class HeadMotionSource: NSObject, CMHeadphoneMotionManagerDelegate {
     }
 
     // MARK: 工具
+
+    /// 供外部寫入「最近事件」。
+    func noteEvent(_ s: String) { event(s) }
 
     private func event(_ s: String) {
         motionLog.info("\(s, privacy: .public)")
