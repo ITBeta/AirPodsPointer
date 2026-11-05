@@ -1,19 +1,52 @@
 import XCTest
 @testable import HeadMouseCore
 
-/// 生成 25Hz 的角速度序列。rateFn(t) 返回 (yawRate, pitchRate)。
-private func rates(duration: Double, start: Double = 0, hz: Double = 25,
-                   _ fn: (Double) -> (Double, Double)) -> [HeadRates] {
-    let dt = 1 / hz
-    return stride(from: 0.0, to: duration, by: dt).map { t in
-        let (y, p) = fn(t)
-        return HeadRates(time: start + t, dt: dt, yawRate: y, pitchRate: p)
+/// 一個正弦波瓣：在 [t0, t0+dur] 內 amp * sin。
+private struct Seg {
+    var t0: Double
+    var dur: Double
+    var amp: Double
+    init(_ t0: Double, _ dur: Double, _ amp: Double) { self.t0 = t0; self.dur = dur; self.amp = amp }
+}
+
+private func signal(_ t: Double, _ segs: [Seg]) -> Double {
+    var v: Double = 0
+    for s in segs where t >= s.t0 && t <= s.t0 + s.dur {
+        v += s.amp * sin(Double.pi * (t - s.t0) / s.dur)
     }
+    return v
+}
+
+/// 生成 25Hz 角速度序列。
+/// yawFromPitch / pitchFromYaw：把另一軸信號按比例混入（模擬斜向運動）。
+private func makeRates(duration: Double, start: Double = 0,
+                       yaw: [Seg] = [], pitch: [Seg] = [],
+                       yawBias: Double = 0, pitchBias: Double = 0,
+                       yawFromPitch: Double = 0, pitchFromYaw: Double = 0) -> [HeadRates] {
+    let dt: Double = 0.04
+    var out: [HeadRates] = []
+    var i = 0
+    while Double(i) * dt < duration {
+        let t = Double(i) * dt
+        let y0 = signal(t, yaw)
+        let p0 = signal(t, pitch)
+        let y = y0 + yawBias + p0 * yawFromPitch
+        let p = p0 + pitchBias + y0 * pitchFromYaw
+        out.append(HeadRates(time: start + t, dt: dt, yawRate: y, pitchRate: p))
+        i += 1
+    }
+    return out
 }
 
 private func run(_ d: inout HeadGestureDetector, _ rs: [HeadRates]) -> [HeadGestureEvent] {
-    rs.compactMap { d.process($0) }
+    var events: [HeadGestureEvent] = []
+    for r in rs {
+        if let e = d.process(r) { events.append(e) }
+    }
+    return events
 }
+
+private func gestures(_ evs: [HeadGestureEvent]) -> [HeadGesture] { evs.map { $0.gesture } }
 
 final class OneEuroFilterTests: XCTestCase {
     func testConstantSignalPassesThrough() {
@@ -90,91 +123,75 @@ final class PointerMapperTests: XCTestCase {
         var m = PointerMapper(config: c)
         // 0.1 rad/s * 10 px/rad = 1 px/s；每幀 0.04 px，30 幀累積 1.2px → 輸出 1px
         var total = 0
-        for i in 0..<30 { total += m.delta(for: HeadRates(time: Double(i) * 0.04, dt: 0.04, yawRate: -0.1, pitchRate: 0)).dx }
+        for i in 0..<30 {
+            let r = HeadRates(time: Double(i) * 0.04, dt: 0.04, yawRate: -0.1, pitchRate: 0)
+            total += m.delta(for: r).dx
+        }
         XCTAssertEqual(total, 1)
     }
 }
 
 final class HeadGestureDetectorTests: XCTestCase {
-    /// 正弦波瓣：在 [t0, t0+dur] 內 amp*sin
-    private func lobe(_ t: Double, _ t0: Double, _ dur: Double, _ amp: Double) -> Double {
-        guard t >= t0, t <= t0 + dur else { return 0 }
-        return amp * sin(.pi * (t - t0) / dur)
-    }
+    private let nodDownUp: [Seg] = [Seg(0.1, 0.2, -2.5), Seg(0.3, 0.2, 2.5)]
+    private let shake3: [Seg] = [Seg(0.0, 0.2, 3), Seg(0.2, 0.2, -3), Seg(0.4, 0.2, 3)]
 
     func testNodDetected() {
         var d = HeadGestureDetector()
-        let rs = rates(duration: 1.0, start: 10) { t in
-            (0.1, self.lobe(t, 0.1, 0.2, -2.5) + self.lobe(t, 0.3, 0.2, 2.5))
-        }
-        let ev = run(&d, rs)
-        XCTAssertEqual(ev.map(\.gesture), [.nod])
-        XCTAssertLessThan(ev[0].startTime, 10.1)
+        let ev = run(&d, makeRates(duration: 1.0, start: 10, pitch: nodDownUp, yawBias: 0.1))
+        XCTAssertEqual(gestures(ev), [.nod])
+        XCTAssertLessThan(ev.first?.startTime ?? 99, 10.1)
     }
 
     func testUpThenDownNodAlsoDetected() {
         var d = HeadGestureDetector()
-        let rs = rates(duration: 1.0) { t in (0, self.lobe(t, 0.1, 0.2, 2.5) + self.lobe(t, 0.3, 0.2, -2.5)) }
-        XCTAssertEqual(run(&d, rs).map(\.gesture), [.nod])
+        let segs: [Seg] = [Seg(0.1, 0.2, 2.5), Seg(0.3, 0.2, -2.5)]
+        XCTAssertEqual(gestures(run(&d, makeRates(duration: 1.0, pitch: segs))), [.nod])
     }
 
     func testSlowLookDownAndUpIsNotNod() {
         var d = HeadGestureDetector()
         // 慢慢低頭看鍵盤再抬頭：峰值 0.8 rad/s，低於閾值
-        let rs = rates(duration: 2.0) { t in (0, self.lobe(t, 0.0, 0.6, -0.8) + self.lobe(t, 1.0, 0.6, 0.8)) }
-        XCTAssertTrue(run(&d, rs).isEmpty)
+        let segs: [Seg] = [Seg(0.0, 0.6, -0.8), Seg(1.0, 0.6, 0.8)]
+        XCTAssertTrue(run(&d, makeRates(duration: 2.0, pitch: segs)).isEmpty)
     }
 
     func testShakeDetected() {
         var d = HeadGestureDetector()
-        let rs = rates(duration: 1.2) { t in
-            (self.lobe(t, 0.0, 0.2, 3) + self.lobe(t, 0.2, 0.2, -3) + self.lobe(t, 0.4, 0.2, 3), 0.2)
-        }
-        XCTAssertEqual(run(&d, rs).map(\.gesture), [.shake])
+        let ev = run(&d, makeRates(duration: 1.2, yaw: shake3, pitchBias: 0.2))
+        XCTAssertEqual(gestures(ev), [.shake])
     }
 
     func testSingleFastTurnIsNotShake() {
         var d = HeadGestureDetector()
         // 快速轉頭看副屏再轉回來（只有 2 次擺動）
-        let rs = rates(duration: 2.0) { t in (self.lobe(t, 0.0, 0.3, 3) + self.lobe(t, 0.8, 0.3, -3), 0) }
-        let ev = run(&d, rs)
-        XCTAssertFalse(ev.contains { $0.gesture == .shake })
-        XCTAssertFalse(ev.contains { $0.gesture == .nod })
+        let segs: [Seg] = [Seg(0.0, 0.3, 3), Seg(0.8, 0.3, -3)]
+        XCTAssertTrue(run(&d, makeRates(duration: 2.0, yaw: segs)).isEmpty)
     }
 
     func testShakeIsNotReportedAsNod() {
         var d = HeadGestureDetector()
         // 搖頭時伴隨少量俯仰
-        let rs = rates(duration: 1.2) { t in
-            let y = self.lobe(t, 0.0, 0.2, 3) + self.lobe(t, 0.2, 0.2, -3) + self.lobe(t, 0.4, 0.2, 3)
-            return (y, y * 0.2)
-        }
-        XCTAssertEqual(run(&d, rs).map(\.gesture), [.shake])
+        let ev = run(&d, makeRates(duration: 1.2, yaw: shake3, pitchFromYaw: 0.2))
+        XCTAssertEqual(gestures(ev), [.shake])
     }
 
     func testDiagonalFlickIsNotNod() {
         var d = HeadGestureDetector()
-        let rs = rates(duration: 1.0) { t in
-            let p = self.lobe(t, 0.1, 0.2, -2.5) + self.lobe(t, 0.3, 0.2, 2.5)
-            return (p * 1.2, p)
-        }
-        XCTAssertFalse(run(&d, rs).contains { $0.gesture == .nod })
+        let ev = run(&d, makeRates(duration: 1.0, pitch: nodDownUp, yawFromPitch: 1.2))
+        XCTAssertFalse(gestures(ev).contains(.nod))
     }
 
     func testCooldownPreventsDoubleFire() {
         var d = HeadGestureDetector()
-        let rs = rates(duration: 1.2) { t in
-            (0, self.lobe(t, 0.0, 0.2, -2.5) + self.lobe(t, 0.2, 0.2, 2.5)
-                + self.lobe(t, 0.4, 0.2, -2.5) + self.lobe(t, 0.6, 0.2, 2.5))
-        }
-        XCTAssertEqual(run(&d, rs).count, 1)
+        let segs: [Seg] = [Seg(0.0, 0.2, -2.5), Seg(0.2, 0.2, 2.5), Seg(0.4, 0.2, -2.5), Seg(0.6, 0.2, 2.5)]
+        XCTAssertEqual(run(&d, makeRates(duration: 1.2, pitch: segs)).count, 1)
     }
 
     func testDisabledGesture() {
-        var c = GestureConfig(); c.nodEnabled = false
+        var c = GestureConfig()
+        c.nodEnabled = false
         var d = HeadGestureDetector(config: c)
-        let rs = rates(duration: 1.0) { t in (0, self.lobe(t, 0.1, 0.2, -2.5) + self.lobe(t, 0.3, 0.2, 2.5)) }
-        XCTAssertTrue(run(&d, rs).isEmpty)
+        XCTAssertTrue(run(&d, makeRates(duration: 1.0, pitch: nodDownUp)).isEmpty)
     }
 }
 
@@ -185,8 +202,9 @@ final class PositionHistoryTests: XCTestCase {
         XCTAssertEqual(h.position(at: 1.01)?.x, 25)
         XCTAssertEqual(h.position(at: 100)?.x, 49)
         // 超出記錄範圍返回最早保留的點（約 1 秒前）
-        let earliest = try! XCTUnwrap(h.position(at: 0)).x
-        XCTAssertTrue((23...25).contains(earliest))
+        let earliest: Double = h.position(at: 0)?.x ?? -1
+        XCTAssertGreaterThanOrEqual(earliest, 23)
+        XCTAssertLessThanOrEqual(earliest, 25)
     }
 }
 
