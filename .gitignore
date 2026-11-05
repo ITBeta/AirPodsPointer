@@ -4,3 +4,4 @@ build/
 .swiftpm/
 DerivedData/
 .DS_Store
+*.tar.gz
