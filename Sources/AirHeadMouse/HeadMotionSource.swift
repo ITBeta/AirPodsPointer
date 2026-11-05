@@ -51,8 +51,12 @@ final class HeadMotionSource: NSObject, CMHeadphoneMotionManagerDelegate {
     private var startUptime: Double = 0
     private var lastSampleUptime: Double = 0
     private var lastRestartUptime: Double = -1000
-    /// 自動重啟的最小間隔（指數退避：3 → 6 → 12 → 24 → 30 秒），收到樣本即重置。
-    private var restartBackoff: Double = 3
+    /// 開始推送後，耳機通常要幾秒才送來第一幀；這段時間絕不重啟。
+    private let firstSampleGrace: Double = 15
+    /// 數據中斷（曾經有數據、後來停了）多久後重啟。
+    private let interruptionTimeout: Double = 3
+    /// 兩次自動重啟的最小間隔。
+    private let autoRestartGap: Double = 10
     private var hzWindowStart: Double = 0
     private var hzWindowCount = 0
 
@@ -107,17 +111,16 @@ final class HeadMotionSource: NSObject, CMHeadphoneMotionManagerDelegate {
     /// - Parameter manual: 用戶點擊按鈕觸發（不計入自動重啟次數）。
     func restart(manual: Bool = false) {
         guard !isRestarting else { return }
-        let minGap = manual ? 3 : restartBackoff
+        let minGap = manual ? 3 : autoRestartGap
         guard now - lastRestartUptime >= minGap else {
             if manual { diag.note = "剛剛已重啟，請稍等幾秒" }
             return
         }
-        if manual { restartBackoff = 3 } else { restartBackoff = min(restartBackoff * 2, 30) }
         diag.note = ""
         isRestarting = true
         lastRestartUptime = now
         diag.restarts += 1
-        event(manual ? "手動重啟" : "自動重啟（下次最短間隔 \(Int(restartBackoff))s）")
+        event(manual ? "手動重啟" : "自動重啟")
 
         manager.stopDeviceMotionUpdates()
         updatesRequested = false
@@ -149,7 +152,6 @@ final class HeadMotionSource: NSObject, CMHeadphoneMotionManagerDelegate {
         if status != .streaming && diag.sampleCount > 0 { event("數據恢復") }
         diag.sampleCount += 1
         lastSampleUptime = t
-        restartBackoff = 3
         hzWindowCount += 1
         if t - hzWindowStart >= 1 {
             diag.sampleHz = Double(hzWindowCount) / (t - hzWindowStart)
@@ -183,19 +185,28 @@ final class HeadMotionSource: NSObject, CMHeadphoneMotionManagerDelegate {
         if silentFor > 1 { diag.sampleHz = 0 }
 
         guard status != .notAuthorized, status != .unavailable, updatesRequested, !isRestarting else { return }
-        if status == .streaming && silentFor > 2 {
-            event("超過 2 秒沒有數據")
+        if status == .streaming && silentFor > interruptionTimeout {
+            event("超過 \(Int(interruptionTimeout)) 秒沒有數據")
             status = .waitingForHeadphones
         }
-        // 推送已開啟但 2 秒無樣本 → 自動重啟（restart 內部按退避節流）。
-        if silentFor > 2 { restart() }
+        if hadDataSinceStart {
+            // 曾經有數據、後來中斷 → 較快重啟。
+            if silentFor > interruptionTimeout { restart() }
+        } else if t - startUptime > firstSampleGrace {
+            // 開始後很久都沒有第一幀 → 重啟一次試試（每 10 秒最多一次）。
+            restart()
+        }
     }
+
+    /// 本次 start 之後是否收到過樣本。
+    private var hadDataSinceStart: Bool { lastSampleUptime >= startUptime && lastSampleUptime > 0 }
 
     /// 外部提示（例如切換了 App）：若 1 秒內沒有新樣本，立即嘗試重啟。
     func nudge() {
         guard updatesRequested, !isRestarting,
               status != .notAuthorized, status != .unavailable else { return }
-        if now - lastSampleUptime > 1 { restart() }
+        // 只在「曾經有數據、現在中斷」時重啟；還在等第一幀時不要打斷。
+        if hadDataSinceStart && now - lastSampleUptime > interruptionTimeout { restart() }
     }
 
     // MARK: 連接回調（只記錄狀態，不重啟）
