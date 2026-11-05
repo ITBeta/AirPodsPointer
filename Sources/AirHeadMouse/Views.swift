@@ -182,6 +182,13 @@ struct DiagnosticsView: View {
             row("狀態", d.reason)
             if !d.motion.lastError.isEmpty { row("錯誤", d.motion.lastError) }
             if d.motion.restarts > 0 { row("重啟次數", "\(d.motion.restarts)") }
+            if !d.motion.note.isEmpty { row("提示", d.motion.note) }
+            if !d.motion.events.isEmpty {
+                Text("最近事件").foregroundStyle(.secondary).padding(.top, 2)
+                ForEach(Array(d.motion.events.enumerated()), id: \.offset) { _, e in
+                    Text(e).lineLimit(2)
+                }
+            }
         }
         .font(.caption.monospacedDigit())
         .textSelection(.enabled)

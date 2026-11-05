@@ -110,7 +110,7 @@ final class AppController: ObservableObject {
 
     func restartMotion() {
         resetMotionState()
-        motion.restart()
+        motion.restart(manual: true)
         note("已重啟頭部追蹤")
     }
 

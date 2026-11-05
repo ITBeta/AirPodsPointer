@@ -7,6 +7,9 @@ import os
 let motionLog = Logger(subsystem: "com.example.airheadmouse", category: "motion")
 
 /// 封裝 CMHeadphoneMotionManager（macOS 14+）。回調均在主線程。
+///
+/// 注意：stop/start 推送本身會觸發系統的 didDisconnect/didConnect 回調，
+/// 所以絕不能在這些回調裡重啟推送，否則會形成死循環。
 final class HeadMotionSource: NSObject, CMHeadphoneMotionManagerDelegate {
     enum Status: Equatable {
         case unavailable          // 設備/系統不支持
@@ -25,6 +28,8 @@ final class HeadMotionSource: NSObject, CMHeadphoneMotionManagerDelegate {
         var lastError = ""
         var sensor = "—"
         var restarts = 0
+        var note = ""
+        var events: [String] = []
     }
 
     private let manager = CMHeadphoneMotionManager()
@@ -41,20 +46,29 @@ final class HeadMotionSource: NSObject, CMHeadphoneMotionManagerDelegate {
     private(set) var diag = Diagnostics()
 
     private var watchdog: Timer?
+    private var updatesRequested = false
+    private var isRestarting = false
+    private var startUptime: Double = 0
     private var lastSampleUptime: Double = 0
-    private var lastRestartUptime: Double = 0
+    private var lastRestartUptime: Double = -1000
+    private var autoRestarts = 0
+    private let maxAutoRestarts = 5
     private var hzWindowStart: Double = 0
     private var hzWindowCount = 0
+
+    private var now: Double { ProcessInfo.processInfo.systemUptime }
 
     override init() {
         super.init()
         manager.delegate = self
     }
 
+    // MARK: 生命週期
+
     func start() {
         diag.available = manager.isDeviceMotionAvailable
         diag.authorization = Self.describe(CMHeadphoneMotionManager.authorizationStatus())
-        motionLog.info("start: available=\(self.diag.available) auth=\(self.diag.authorization, privacy: .public)")
+        event("start（授權：\(diag.authorization)）")
         guard manager.isDeviceMotionAvailable else { status = .unavailable; return }
 
         switch CMHeadphoneMotionManager.authorizationStatus() {
@@ -67,10 +81,7 @@ final class HeadMotionSource: NSObject, CMHeadphoneMotionManagerDelegate {
         default: break
         }
 
-        if status != .streaming { status = .waitingForHeadphones }
-        manager.startDeviceMotionUpdates(to: .main) { [weak self] motion, error in
-            self?.handle(motion: motion, error: error)
-        }
+        startUpdates()
         startWatchdog()
     }
 
@@ -78,39 +89,67 @@ final class HeadMotionSource: NSObject, CMHeadphoneMotionManagerDelegate {
         watchdog?.invalidate()
         watchdog = nil
         manager.stopDeviceMotionUpdates()
+        updatesRequested = false
     }
 
-    /// 停止後重新開始推送（耳機重連、數據中斷時使用）。
-    func restart() {
-        motionLog.info("restart")
-        diag.restarts += 1
-        lastRestartUptime = ProcessInfo.processInfo.systemUptime
-        manager.stopDeviceMotionUpdates()
-        lastSampleUptime = 0
-        status = .waitingForHeadphones
-        start()
+    /// 只在尚未開始時開始推送（不會先 stop）。
+    private func startUpdates() {
+        guard !updatesRequested else { return }
+        updatesRequested = true
+        startUptime = now
+        if status != .streaming { status = .waitingForHeadphones }
+        manager.startDeviceMotionUpdates(to: .main) { [weak self] motion, error in
+            self?.handle(motion: motion, error: error)
+        }
     }
+
+    /// 停止後延遲 0.5s 重新開始推送。帶防重入與 10s 節流。
+    /// - Parameter manual: 用戶點擊按鈕觸發（不計入自動重啟次數）。
+    func restart(manual: Bool = false) {
+        guard !isRestarting else { return }
+        guard now - lastRestartUptime >= 10 else {
+            if manual { diag.note = "剛剛已重啟，請稍等幾秒" }
+            return
+        }
+        if manual { autoRestarts = 0; diag.note = "" }
+        isRestarting = true
+        lastRestartUptime = now
+        diag.restarts += 1
+        event(manual ? "手動重啟" : "自動重啟（第 \(autoRestarts) 次）")
+
+        manager.stopDeviceMotionUpdates()
+        updatesRequested = false
+        status = .waitingForHeadphones
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) { [weak self] in
+            guard let self else { return }
+            self.isRestarting = false
+            self.startUpdates()
+        }
+    }
+
+    // MARK: 數據
 
     private func handle(motion: CMDeviceMotion?, error: Error?) {
-        diag.authorization = Self.describe(CMHeadphoneMotionManager.authorizationStatus())
         if let error {
             diag.lastError = error.localizedDescription
-            motionLog.error("motion error: \(error.localizedDescription, privacy: .public)")
+            event("錯誤：\(error.localizedDescription)")
             if CMHeadphoneMotionManager.authorizationStatus() == .denied { status = .notAuthorized }
             return
         }
-        guard let m = motion else { return }
+        guard let m = motion, !isRestarting else { return }
 
-        let now = ProcessInfo.processInfo.systemUptime
+        let t = now
         if diag.sampleCount == 0 {
-            motionLog.info("first sample: att=(\(m.attitude.yaw), \(m.attitude.pitch), \(m.attitude.roll)) gyro=(\(m.rotationRate.x), \(m.rotationRate.y), \(m.rotationRate.z))")
+            event(String(format: "首幀 姿態(%.3f, %.3f, %.3f) 陀螺儀(%.3f, %.3f, %.3f)",
+                         m.attitude.yaw, m.attitude.pitch, m.attitude.roll,
+                         m.rotationRate.x, m.rotationRate.y, m.rotationRate.z))
         }
         diag.sampleCount += 1
-        lastSampleUptime = now
+        lastSampleUptime = t
         hzWindowCount += 1
-        if now - hzWindowStart >= 1 {
-            diag.sampleHz = Double(hzWindowCount) / (now - hzWindowStart)
-            hzWindowStart = now
+        if t - hzWindowStart >= 1 {
+            diag.sampleHz = Double(hzWindowCount) / (t - hzWindowStart)
+            hzWindowStart = t
             hzWindowCount = 0
         }
         diag.sensor = Self.describe(m.sensorLocation)
@@ -123,6 +162,8 @@ final class HeadMotionSource: NSObject, CMHeadphoneMotionManagerDelegate {
                                gyroX: r.x, gyroY: r.y, gyroZ: r.z))
     }
 
+    // MARK: 看門狗
+
     private func startWatchdog() {
         guard watchdog == nil else { return }
         watchdog = Timer.scheduledTimer(withTimeInterval: 2, repeats: true) { [weak self] _ in
@@ -131,36 +172,55 @@ final class HeadMotionSource: NSObject, CMHeadphoneMotionManagerDelegate {
     }
 
     private func checkHealth() {
+        let t = now
         diag.active = manager.isDeviceMotionActive
-        if diag.sampleHz > 0, ProcessInfo.processInfo.systemUptime - lastSampleUptime > 1 { diag.sampleHz = 0 }
-        guard status != .notAuthorized, status != .unavailable else { return }
-        let silentFor = ProcessInfo.processInfo.systemUptime - lastSampleUptime
+        diag.authorization = Self.describe(CMHeadphoneMotionManager.authorizationStatus())
+        let silentFor = t - max(lastSampleUptime, startUptime)
+        if silentFor > 1 { diag.sampleHz = 0 }
+
+        guard status != .notAuthorized, status != .unavailable, updatesRequested, !isRestarting else { return }
         if status == .streaming && silentFor > 3 {
-            motionLog.info("no samples for \(silentFor)s")
+            event("超過 3 秒沒有數據")
             status = .waitingForHeadphones
         }
-        // 已連接但沒有數據（或推送已停止）→ 重新開始。
-        let sinceRestart = ProcessInfo.processInfo.systemUptime - lastRestartUptime
-        if status == .waitingForHeadphones && (diag.connected || !manager.isDeviceMotionActive)
-            && silentFor > 3 && sinceRestart > 6 {
+        // 推送已開啟、10 秒無任何樣本、距上次重啟超過 30 秒 → 自動重啟（最多 5 次）。
+        guard silentFor > 10, t - lastRestartUptime > 30 else { return }
+        if autoRestarts < maxAutoRestarts {
+            autoRestarts += 1
             restart()
+        } else {
+            diag.note = "自動重啟已停止，請手動點「重啟頭部追蹤」"
         }
     }
 
+    // MARK: 連接回調（只記錄狀態，不重啟）
+
     func headphoneMotionManagerDidConnect(_ manager: CMHeadphoneMotionManager) {
         DispatchQueue.main.async {
-            motionLog.info("headphones connected")
             self.diag.connected = true
-            self.restart()
+            guard !self.isRestarting else { return }
+            self.event("耳機已連接")
+            if !self.manager.isDeviceMotionActive { self.startUpdates() }
         }
     }
 
     func headphoneMotionManagerDidDisconnect(_ manager: CMHeadphoneMotionManager) {
         DispatchQueue.main.async {
-            motionLog.info("headphones disconnected")
             self.diag.connected = false
+            guard !self.isRestarting else { return }
+            self.event("耳機已斷開")
             self.status = .waitingForHeadphones
         }
+    }
+
+    // MARK: 工具
+
+    private func event(_ s: String) {
+        motionLog.info("\(s, privacy: .public)")
+        let f = DateFormatter()
+        f.dateFormat = "HH:mm:ss"
+        diag.events.append("\(f.string(from: Date())) \(s)")
+        if diag.events.count > 5 { diag.events.removeFirst(diag.events.count - 5) }
     }
 
     private static func describe(_ s: CMAuthorizationStatus) -> String {
