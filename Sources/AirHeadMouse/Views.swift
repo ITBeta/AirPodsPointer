@@ -45,10 +45,12 @@ struct MenuContentView: View {
             Text("最近事件：\(app.lastEvent)").font(.caption).foregroundStyle(.secondary)
 
             DisclosureGroup("調試數據", isExpanded: $app.showDebug) {
-                let a = app.attitude
-                Text(String(format: "yaw %+.1f°  pitch %+.1f°  roll %+.1f°",
-                            a.yaw * 180 / .pi, a.pitch * 180 / .pi, a.roll * 180 / .pi))
-                    .font(.caption.monospacedDigit())
+                DiagnosticsView(d: app.live)
+                HStack {
+                    Button("重啟頭部追蹤") { app.restartMotion() }
+                    Button("運動與健身設置") { Permissions.openMotionSettings() }
+                }
+                .font(.caption)
             }
             .font(.caption)
 
@@ -61,7 +63,7 @@ struct MenuContentView: View {
             }
         }
         .padding(14)
-        .frame(width: 320)
+        .frame(width: 380)
     }
 }
 
@@ -73,9 +75,10 @@ struct SettingsView: View {
             pointerTab.tabItem { Label("光標", systemImage: "cursorarrow.motionlines") }
             mappingTab.tabItem { Label("手勢映射", systemImage: "hand.tap") }
             gestureTab.tabItem { Label("頭部手勢", systemImage: "person.crop.circle") }
+            motionTab.tabItem { Label("數據來源", systemImage: "gyroscope") }
         }
         .padding(20)
-        .frame(width: 480, height: 400)
+        .frame(width: 520, height: 420)
     }
 
     private var pointerTab: some View {
@@ -121,6 +124,31 @@ struct SettingsView: View {
         }
     }
 
+    private var motionTab: some View {
+        Form {
+            Picker("角速度來源", selection: $app.settings.motion.mode) {
+                ForEach(MotionSourceMode.allCases, id: \.self) { m in Text(m.displayName).tag(m) }
+            }
+            axisPicker("轉頭（左右）軸", \.motion.yawAxis)
+            axisPicker("點頭（上下）軸", \.motion.pitchAxis)
+            Text("「自動」：姿態數據正常時用姿態；若姿態一直不變但陀螺儀有數據，自動改用陀螺儀。使用陀螺儀時，打開菜單「調試數據」轉頭/點頭，看 gyro 哪個軸變化最大，選對應的軸；方向反了就勾「反向」。")
+                .font(.caption).foregroundStyle(.secondary)
+            Text("當前：\(app.live.usingGyro ? "陀螺儀" : "姿態")")
+                .font(.caption)
+        }
+    }
+
+    private func axisPicker(_ title: String, _ kp: WritableKeyPath<AppSettings, AxisMapping>) -> some View {
+        HStack {
+            Picker(title, selection: Binding(get: { app.settings[keyPath: kp].axis },
+                                             set: { app.settings[keyPath: kp].axis = $0 })) {
+                ForEach(GyroAxis.allCases, id: \.self) { a in Text(a.rawValue.uppercased()).tag(a) }
+            }
+            Toggle("反向", isOn: Binding(get: { app.settings[keyPath: kp].inverted },
+                                       set: { app.settings[keyPath: kp].inverted = $0 }))
+        }
+    }
+
     private func slider(_ title: String, _ kp: WritableKeyPath<AppSettings, Double>,
                         _ range: ClosedRange<Double>, _ fmt: String) -> some View {
         HStack {
@@ -129,6 +157,40 @@ struct SettingsView: View {
                                   set: { app.settings[keyPath: kp] = $0 }), in: range)
             Text(String(format: fmt, app.settings[keyPath: kp]))
                 .font(.caption.monospacedDigit()).frame(width: 50, alignment: .trailing)
+        }
+    }
+}
+
+struct DiagnosticsView: View {
+    let d: LiveDiagnostics
+
+    private func deg(_ r: Double) -> String { String(format: "%+.1f°", r * 180 / .pi) }
+    private func rate(_ r: Double) -> String { String(format: "%+.2f", r) }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 3) {
+            row("授權", d.motion.authorization)
+            row("可用 / 推送中 / 已連接",
+                "\(d.motion.available ? "是" : "否") / \(d.motion.active ? "是" : "否") / \(d.motion.connected ? "是" : "否")")
+            row("樣本數 / 頻率", "\(d.motion.sampleCount) / \(String(format: "%.1f", d.motion.sampleHz)) Hz")
+            row("傳感器", d.motion.sensor)
+            row("姿態 yaw/pitch/roll", "\(deg(d.sample.yaw)) \(deg(d.sample.pitch)) \(deg(d.sample.roll))")
+            row("陀螺儀 x/y/z (rad/s)", "\(rate(d.sample.gyroX)) \(rate(d.sample.gyroY)) \(rate(d.sample.gyroZ))")
+            row("數據來源", d.usingGyro ? "陀螺儀" : "姿態")
+            row("角速度 yaw/pitch", "\(rate(d.yawRate)) \(rate(d.pitchRate))")
+            row("本幀位移", "dx \(d.dx)  dy \(d.dy)")
+            row("狀態", d.reason)
+            if !d.motion.lastError.isEmpty { row("錯誤", d.motion.lastError) }
+            if d.motion.restarts > 0 { row("重啟次數", "\(d.motion.restarts)") }
+        }
+        .font(.caption.monospacedDigit())
+        .textSelection(.enabled)
+    }
+
+    private func row(_ k: String, _ v: String) -> some View {
+        HStack(alignment: .top) {
+            Text(k).foregroundStyle(.secondary).frame(width: 130, alignment: .leading)
+            Text(v)
         }
     }
 }

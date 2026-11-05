@@ -53,6 +53,7 @@ public enum MouseAction: String, Codable, CaseIterable, Sendable {
 public struct AppSettings: Codable, Equatable, Sendable {
     public var pointer = PointerConfig()
     public var gestures = GestureConfig()
+    public var motion = MotionConfig()
     public var mapping: [Trigger: MouseAction] = AppSettings.defaultMapping
     /// AirPods 按壓上報有延遲（系統要等待判斷單/雙/三擊）；
     /// 點擊時光標回退到「按下那一刻」的位置，前提是期間移動小於 snapRadius。
@@ -79,6 +80,7 @@ public struct AppSettings: Codable, Equatable, Sendable {
         let d = AppSettings()
         pointer = try c.decodeIfPresent(PointerConfig.self, forKey: .pointer) ?? d.pointer
         gestures = try c.decodeIfPresent(GestureConfig.self, forKey: .gestures) ?? d.gestures
+        motion = try c.decodeIfPresent(MotionConfig.self, forKey: .motion) ?? d.motion
         mapping = try c.decodeIfPresent([Trigger: MouseAction].self, forKey: .mapping) ?? d.mapping
         pressLatency = try c.decodeIfPresent(Double.self, forKey: .pressLatency) ?? d.pressLatency
         snapRadius = try c.decodeIfPresent(Double.self, forKey: .snapRadius) ?? d.snapRadius

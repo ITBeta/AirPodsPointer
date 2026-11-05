@@ -10,12 +10,16 @@ final class AppController: ObservableObject {
     @Published private(set) var motionStatus: HeadMotionSource.Status = .waitingForHeadphones
     @Published private(set) var accessibilityGranted = Permissions.accessibilityGranted
     @Published private(set) var lastEvent = "—"
-    @Published private(set) var attitude = (yaw: 0.0, pitch: 0.0, roll: 0.0)
+    @Published private(set) var live = LiveDiagnostics()
     @Published var showDebug = false
     @Published var settings: AppSettings {
         didSet {
             mapper.config = settings.pointer
             detector.config = settings.gestures
+            if rateSource.config != settings.motion {
+                rateSource.config = settings.motion
+                rateSource.reset()
+            }
             SettingsStore.save(settings)
         }
     }
@@ -24,18 +28,20 @@ final class AppController: ObservableObject {
     private let motion = HeadMotionSource()
     private let presses = PressGestureSource()
     private let sink = MacInputSink()
-    private var rates = RateEstimator()
+    private var rateSource: HeadRateSource
     private var mapper: PointerMapper
     private var detector: HeadGestureDetector
     private var history = PositionHistory(span: 1.5)
     private var freezeUntil: Double = 0
     private var permissionTimer: Timer?
     private var lastUIUpdate: Double = 0
+    private var pending: LiveDiagnostics?
 
     init() {
         let s = SettingsStore.load()
         _settings = Published(initialValue: s)
         mapper = PointerMapper(config: s.pointer)
+        rateSource = HeadRateSource(config: s.motion)
         detector = HeadGestureDetector(config: s.gestures)
     }
 
@@ -63,13 +69,23 @@ final class AppController: ObservableObject {
     func start() {
         if !Permissions.accessibilityGranted { Permissions.requestAccessibility() }
         permissionTimer = Timer.scheduledTimer(withTimeInterval: 2, repeats: true) { [weak self] _ in
-            self?.accessibilityGranted = Permissions.accessibilityGranted
+            guard let self else { return }
+            self.accessibilityGranted = Permissions.accessibilityGranted
+            // 沒有樣本時也刷新診斷（例如授權狀態、重啟次數）。
+            var d = self.pending ?? self.live
+            d.motion = self.motion.diag
+            if self.motionStatus != .streaming { d.reason = "沒有收到頭部數據" }
+            self.live = d
+            self.pending = nil
         }
 
         motion.onStatusChange = { [weak self] status in
             guard let self else { return }
             self.motionStatus = status
-            if status != .streaming { self.resetMotionState() }
+            if status != .streaming {
+                self.resetMotionState()
+                self.showDebug = true   // 沒有數據時自動展開診斷
+            }
         }
         motion.onSample = { [weak self] s in self?.handle(sample: s) }
         motion.start()
@@ -92,6 +108,12 @@ final class AppController: ObservableObject {
         resetMotionState()
     }
 
+    func restartMotion() {
+        resetMotionState()
+        motion.restart()
+        note("已重啟頭部追蹤")
+    }
+
     func reclaimNowPlaying() {
         presses.reclaim()
         note("已重新獲取媒體按鍵控制")
@@ -103,30 +125,60 @@ final class AppController: ObservableObject {
 
     private func handle(sample: MotionSample) {
         let now = sample.time
-        if showDebug, now - lastUIUpdate > 0.1 {
-            attitude = (sample.yaw, sample.pitch, sample.roll)
-            lastUIUpdate = now
-        }
+        var d = live
+        d.sample = sample
+        d.usingGyro = rateSource.usingGyro
 
-        guard let r = rates.update(sample) else { return }
+        guard let r = rateSource.update(sample) else {
+            d.reason = "等待第二幀數據"
+            publish(d, now: now)
+            return
+        }
+        d.yawRate = r.yawRate
+        d.pitchRate = r.pitchRate
+        d.dx = 0; d.dy = 0
 
         if let g = detector.process(r) {
+            motionLog.info("gesture \(g.gesture.rawValue, privacy: .public)")
             handle(gesture: g)
+            d.reason = "識別到\(g.gesture == .nod ? "點頭" : "搖頭")"
+            publish(d, now: now, force: true)
             return
         }
 
-        guard trackingEnabled, accessibilityGranted, now >= freezeUntil else {
-            history.record(sink.cursorLocation, at: now)
-            return
-        }
-
-        let (dx, dy) = mapper.delta(for: r)
-        let current = sink.cursorLocation
-        if dx != 0 || dy != 0 {
-            let target = Vec2(current.x + Double(dx), current.y + Double(dy))
-            sink.move(to: target)
+        if !trackingEnabled {
+            d.reason = "頭控已暫停"
+        } else if !accessibilityGranted {
+            d.reason = "缺少輔助功能權限"
+        } else if now < freezeUntil {
+            d.reason = "點擊後短暫凍結"
+        } else {
+            let (dx, dy) = mapper.delta(for: r)
+            d.dx = dx; d.dy = dy
+            if dx != 0 || dy != 0 {
+                let current = sink.cursorLocation
+                sink.move(to: Vec2(current.x + Double(dx), current.y + Double(dy)))
+                d.reason = "移動中"
+            } else if mapper.velocity(yawRate: r.yawRate, pitchRate: r.pitchRate) == .zero {
+                d.reason = "速度低於死區（頭沒動，或數據恆定）"
+            } else {
+                d.reason = "累積亞像素中"
+            }
         }
         history.record(sink.cursorLocation, at: now)
+        publish(d, now: now)
+    }
+
+    /// 診斷信息約 5Hz 刷新，避免頻繁重繪 UI。
+    private func publish(_ d: LiveDiagnostics, now: Double, force: Bool = false) {
+        var d = d
+        d.motion = motion.diag
+        if force || now - lastUIUpdate > 0.2 {
+            live = d
+            lastUIUpdate = now
+        } else {
+            pending = d
+        }
     }
 
     private func handle(gesture g: HeadGestureEvent) {
@@ -202,7 +254,7 @@ final class AppController: ObservableObject {
     }
 
     private func resetMotionState() {
-        rates.reset()
+        rateSource.reset()
         mapper.reset()
         history.clear()
     }
@@ -226,4 +278,15 @@ enum SettingsStore {
     static func save(_ s: AppSettings) {
         if let data = try? JSONEncoder().encode(s) { UserDefaults.standard.set(data, forKey: key) }
     }
+}
+
+struct LiveDiagnostics {
+    var motion = HeadMotionSource.Diagnostics()
+    var sample = MotionSample(time: 0, yaw: 0, pitch: 0, roll: 0)
+    var usingGyro = false
+    var yawRate = 0.0
+    var pitchRate = 0.0
+    var dx = 0
+    var dy = 0
+    var reason = "—"
 }

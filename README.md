@@ -42,11 +42,29 @@ open build/AirHeadMouse.app
 - 如果打開了 Music / Spotify / 瀏覽器視頻，耳機按壓可能被它們搶走 → 菜單裡點「重新獲取耳機按鍵」。
 - 本程序播放靜音音頻來接收耳機按壓，聽音樂時耳機按鍵將由本程序接管。
 
+## 故障排查：轉頭光標不動
+打開菜單欄圖標 →「調試數據」，看這幾行：
+
+| 現象 | 說明 / 處理 |
+|---|---|
+| 授權 = 未決定 / 已拒絕 | 系統設置 → 隱私與安全性 → 運動與健身，打開 AirHeadMouse |
+| 樣本數 = 0 | 沒收到數據：確認 AirPods 已戴上、是當前音頻輸出；點「重啟頭部追蹤」 |
+| 樣本數增長，但姿態恆為 0 | 程序會自動改用陀螺儀（數據來源顯示「陀螺儀」）；也可在 設置 → 數據來源 手動選 |
+| 陀螺儀 x/y/z 也恆為 0 | 耳機沒在推送運動數據：控制中心 → 聲音 → AirPods →「空間音頻」改為「頭部追蹤」，摘下重戴一次 |
+| 光標方向反了 / 上下左右錯軸 | 設置 → 數據來源：轉頭時看哪個 gyro 軸變化最大，選該軸，方向反了勾「反向」 |
+| 狀態 = 速度低於死區 | 頭在動卻顯示此項 → 調小 設置 → 光標 → 死區 |
+
+查看日誌：
+```bash
+log stream --predicate 'subsystem == "com.example.airheadmouse"'
+```
+
 ## 項目結構
 ```
 Sources/HeadMouseCore/      純邏輯（只依賴 Foundation，可測試、可移植到 Windows/iPhone 橋接）
   OneEuroFilter.swift       去抖濾波
   MotionSample.swift        姿態 → 角速度（處理 yaw ±π 跳變）
+  HeadRateSource.swift      姿態 / 陀螺儀 / 自動切換 的角速度來源
   PointerMapper.swift       角速度 → 像素位移（死區、加速曲線、亞像素累積）
   HeadGestureDetector.swift 點頭/搖頭識別
   PositionHistory.swift     光標歷史，用於手勢後還原

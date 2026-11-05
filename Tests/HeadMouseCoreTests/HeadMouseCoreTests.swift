@@ -195,6 +195,71 @@ final class HeadGestureDetectorTests: XCTestCase {
     }
 }
 
+final class HeadRateSourceTests: XCTestCase {
+    private func frozenAttitudeSamples(count: Int, gyroZ: Double) -> [MotionSample] {
+        var out: [MotionSample] = []
+        for i in 0..<count {
+            out.append(MotionSample(time: Double(i) * 0.04, yaw: 0, pitch: 0, roll: 0,
+                                    gyroX: 0, gyroY: 0, gyroZ: gyroZ))
+        }
+        return out
+    }
+
+    func testAxisMapping() {
+        let s = MotionSample(time: 0, yaw: 0, pitch: 0, roll: 0, gyroX: 1, gyroY: 2, gyroZ: 3)
+        XCTAssertEqual(AxisMapping(.x).value(in: s), 1)
+        XCTAssertEqual(AxisMapping(.y).value(in: s), 2)
+        XCTAssertEqual(AxisMapping(.z, inverted: true).value(in: s), -3)
+    }
+
+    func testAutoSwitchesToGyroWhenAttitudeFrozen() {
+        var src = HeadRateSource()
+        var last: HeadRates?
+        for smp in frozenAttitudeSamples(count: 60, gyroZ: 0.5) {
+            if let r = src.update(smp) { last = r }
+        }
+        XCTAssertTrue(src.usingGyro)
+        XCTAssertEqual(last?.yawRate ?? 0, 0.5, accuracy: 0.05)
+    }
+
+    func testAutoStaysOnAttitudeWhenAttitudeMoves() {
+        var src = HeadRateSource()
+        var last: HeadRates?
+        for i in 0..<60 {
+            let t = Double(i) * 0.04
+            let smp = MotionSample(time: t, yaw: 0.5 * t, pitch: 0, roll: 0, gyroX: 0, gyroY: 0, gyroZ: 0.5)
+            if let r = src.update(smp) { last = r }
+        }
+        XCTAssertFalse(src.usingGyro)
+        XCTAssertEqual(last?.yawRate ?? 0, 0.5, accuracy: 0.05)
+    }
+
+    func testForcedGyroMode() {
+        var c = MotionConfig()
+        c.mode = .gyro
+        c.yawAxis = AxisMapping(.y, inverted: true)
+        var src = HeadRateSource(config: c)
+        var last: HeadRates?
+        for i in 0..<30 {
+            let smp = MotionSample(time: Double(i) * 0.04, yaw: 0, pitch: 0, roll: 0, gyroX: 0, gyroY: 0.4, gyroZ: 0)
+            if let r = src.update(smp) { last = r }
+        }
+        XCTAssertEqual(last?.yawRate ?? 0, -0.4, accuracy: 0.05)
+    }
+
+    func testForcedAttitudeModeIgnoresGyro() {
+        var c = MotionConfig()
+        c.mode = .attitude
+        var src = HeadRateSource(config: c)
+        var last: HeadRates?
+        for smp in frozenAttitudeSamples(count: 60, gyroZ: 0.5) {
+            if let r = src.update(smp) { last = r }
+        }
+        XCTAssertFalse(src.usingGyro)
+        XCTAssertEqual(last?.yawRate ?? 1, 0, accuracy: 1e-9)
+    }
+}
+
 final class PositionHistoryTests: XCTestCase {
     func testLookup() {
         var h = PositionHistory(span: 1.0)
