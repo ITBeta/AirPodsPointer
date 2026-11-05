@@ -30,6 +30,8 @@ final class HeadMotionSource: NSObject, CMHeadphoneMotionManagerDelegate {
         var restarts = 0
         var note = ""
         var events: [String] = []
+        var audioOutput = "—"
+        var outputIsBluetooth = true
     }
 
     private let manager = CMHeadphoneMotionManager()
@@ -183,6 +185,13 @@ final class HeadMotionSource: NSObject, CMHeadphoneMotionManagerDelegate {
         diag.authorization = Self.describe(CMHeadphoneMotionManager.authorizationStatus())
         let silentFor = t - max(lastSampleUptime, startUptime)
         if silentFor > 1 { diag.sampleHz = 0 }
+
+        if let out = AudioOutput.current() {
+            diag.audioOutput = out.name + (out.isBluetooth ? "（藍牙）" : "")
+            diag.outputIsBluetooth = out.isBluetooth
+        } else {
+            diag.audioOutput = "未知"
+        }
 
         guard status != .notAuthorized, status != .unavailable, updatesRequested, !isRestarting else { return }
         if status == .streaming && silentFor > interruptionTimeout {

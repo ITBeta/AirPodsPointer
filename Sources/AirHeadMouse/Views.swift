@@ -191,6 +191,11 @@ struct DiagnosticsView: View {
                 "\(d.motion.available ? "是" : "否") / \(d.motion.active ? "是" : "否") / \(d.motion.connected ? "是" : "否")")
             row("樣本數 / 頻率", "\(d.motion.sampleCount) / \(String(format: "%.1f", d.motion.sampleHz)) Hz")
             row("傳感器", d.motion.sensor)
+            row("音頻輸出", d.motion.audioOutput)
+            if !d.motion.outputIsBluetooth {
+                Text("⚠️ 請把聲音輸出切到 AirPods（控制中心 → 聲音），否則收不到頭部數據")
+                    .foregroundStyle(Color.orange)
+            }
             row("姿態 yaw/pitch/roll", "\(deg(d.sample.yaw)) \(deg(d.sample.pitch)) \(deg(d.sample.roll))")
             row("陀螺儀 x/y/z (rad/s)", "\(rate(d.sample.gyroX)) \(rate(d.sample.gyroY)) \(rate(d.sample.gyroZ))")
             row("數據來源", d.usingGyro ? "陀螺儀" : "姿態")

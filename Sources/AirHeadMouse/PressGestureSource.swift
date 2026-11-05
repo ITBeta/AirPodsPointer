@@ -72,17 +72,17 @@ final class PressGestureSource {
 
     private func startSilentPlayback() {
         do {
-            let url = try Self.makeSilentWAV()
+            let url = try Self.makeKeepAliveWAV()
             let p = try AVAudioPlayer(contentsOf: url)
             p.numberOfLoops = -1
-            p.volume = 0.01
+            p.volume = 1.0   // 內容本身已不可聞（約 -80 dBFS）；調低音量會把它縮成全零
             p.prepareToPlay()
             p.play()
             player = p
 
             let b = try AVAudioPlayer(contentsOf: url)
             b.numberOfLoops = 0
-            b.volume = 0.01
+            b.volume = 1.0
             b.prepareToPlay()
             blipPlayer = b
         } catch {
@@ -136,9 +136,12 @@ final class PressGestureSource {
         onPress?(kind)
     }
 
-    /// 生成 1 秒 16-bit 單聲道靜音 WAV。
-    private static func makeSilentWAV() throws -> URL {
-        let url = FileManager.default.temporaryDirectory.appendingPathComponent("airheadmouse-silence.wav")
+    /// 生成 1 秒 16-bit 單聲道「保活」WAV：±3 LSB 隨機抖動（≈ -80 dBFS，聽不見）。
+    ///
+    /// 不能用數字全零：系統會把全零當作沒有聲音，藍牙音頻鏈路進入空閒，
+    /// AirPods 隨之停止發送頭部運動數據。
+    private static func makeKeepAliveWAV() throws -> URL {
+        let url = FileManager.default.temporaryDirectory.appendingPathComponent("airheadmouse-keepalive-v2.wav")
         if FileManager.default.fileExists(atPath: url.path) { return url }
         let sampleRate: UInt32 = 44_100
         let numSamples = sampleRate
@@ -151,7 +154,9 @@ final class PressGestureSource {
         d.append("fmt ".data(using: .ascii)!); u32(16); u16(1); u16(1)
         u32(sampleRate); u32(sampleRate * 2); u16(2); u16(16)
         d.append("data".data(using: .ascii)!); u32(dataSize)
-        d.append(Data(count: Int(dataSize)))
+        var samples = [Int16](repeating: 0, count: Int(numSamples))
+        for i in samples.indices { samples[i] = Int16.random(in: -3...3).littleEndian }
+        samples.withUnsafeBufferPointer { d.append(Data(buffer: $0)) }
         try d.write(to: url)
         return url
     }
