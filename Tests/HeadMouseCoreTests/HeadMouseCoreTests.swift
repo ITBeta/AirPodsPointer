@@ -38,7 +38,7 @@ private func makeRates(duration: Double, start: Double = 0,
     return out
 }
 
-private func run(_ d: inout HeadGestureDetector, _ rs: [HeadRates]) -> [HeadGestureEvent] {
+private func detectAll(_ d: inout HeadGestureDetector, _ rs: [HeadRates]) -> [HeadGestureEvent] {
     var events: [HeadGestureEvent] = []
     for r in rs {
         if let e = d.process(r) { events.append(e) }
@@ -137,7 +137,7 @@ final class HeadGestureDetectorTests: XCTestCase {
 
     func testNodDetected() {
         var d = HeadGestureDetector()
-        let ev = run(&d, makeRates(duration: 1.0, start: 10, pitch: nodDownUp, yawBias: 0.1))
+        let ev = detectAll(&d, makeRates(duration: 1.0, start: 10, pitch: nodDownUp, yawBias: 0.1))
         XCTAssertEqual(gestures(ev), [.nod])
         XCTAssertLessThan(ev.first?.startTime ?? 99, 10.1)
     }
@@ -145,19 +145,19 @@ final class HeadGestureDetectorTests: XCTestCase {
     func testUpThenDownNodAlsoDetected() {
         var d = HeadGestureDetector()
         let segs: [Seg] = [Seg(0.1, 0.2, 2.5), Seg(0.3, 0.2, -2.5)]
-        XCTAssertEqual(gestures(run(&d, makeRates(duration: 1.0, pitch: segs))), [.nod])
+        XCTAssertEqual(gestures(detectAll(&d, makeRates(duration: 1.0, pitch: segs))), [.nod])
     }
 
     func testSlowLookDownAndUpIsNotNod() {
         var d = HeadGestureDetector()
         // 慢慢低頭看鍵盤再抬頭：峰值 0.8 rad/s，低於閾值
         let segs: [Seg] = [Seg(0.0, 0.6, -0.8), Seg(1.0, 0.6, 0.8)]
-        XCTAssertTrue(run(&d, makeRates(duration: 2.0, pitch: segs)).isEmpty)
+        XCTAssertTrue(detectAll(&d, makeRates(duration: 2.0, pitch: segs)).isEmpty)
     }
 
     func testShakeDetected() {
         var d = HeadGestureDetector()
-        let ev = run(&d, makeRates(duration: 1.2, yaw: shake3, pitchBias: 0.2))
+        let ev = detectAll(&d, makeRates(duration: 1.2, yaw: shake3, pitchBias: 0.2))
         XCTAssertEqual(gestures(ev), [.shake])
     }
 
@@ -165,33 +165,33 @@ final class HeadGestureDetectorTests: XCTestCase {
         var d = HeadGestureDetector()
         // 快速轉頭看副屏再轉回來（只有 2 次擺動）
         let segs: [Seg] = [Seg(0.0, 0.3, 3), Seg(0.8, 0.3, -3)]
-        XCTAssertTrue(run(&d, makeRates(duration: 2.0, yaw: segs)).isEmpty)
+        XCTAssertTrue(detectAll(&d, makeRates(duration: 2.0, yaw: segs)).isEmpty)
     }
 
     func testShakeIsNotReportedAsNod() {
         var d = HeadGestureDetector()
         // 搖頭時伴隨少量俯仰
-        let ev = run(&d, makeRates(duration: 1.2, yaw: shake3, pitchFromYaw: 0.2))
+        let ev = detectAll(&d, makeRates(duration: 1.2, yaw: shake3, pitchFromYaw: 0.2))
         XCTAssertEqual(gestures(ev), [.shake])
     }
 
     func testDiagonalFlickIsNotNod() {
         var d = HeadGestureDetector()
-        let ev = run(&d, makeRates(duration: 1.0, pitch: nodDownUp, yawFromPitch: 1.2))
+        let ev = detectAll(&d, makeRates(duration: 1.0, pitch: nodDownUp, yawFromPitch: 1.2))
         XCTAssertFalse(gestures(ev).contains(.nod))
     }
 
     func testCooldownPreventsDoubleFire() {
         var d = HeadGestureDetector()
         let segs: [Seg] = [Seg(0.0, 0.2, -2.5), Seg(0.2, 0.2, 2.5), Seg(0.4, 0.2, -2.5), Seg(0.6, 0.2, 2.5)]
-        XCTAssertEqual(run(&d, makeRates(duration: 1.2, pitch: segs)).count, 1)
+        XCTAssertEqual(detectAll(&d, makeRates(duration: 1.2, pitch: segs)).count, 1)
     }
 
     func testDisabledGesture() {
         var c = GestureConfig()
         c.nodEnabled = false
         var d = HeadGestureDetector(config: c)
-        XCTAssertTrue(run(&d, makeRates(duration: 1.0, pitch: nodDownUp)).isEmpty)
+        XCTAssertTrue(detectAll(&d, makeRates(duration: 1.0, pitch: nodDownUp)).isEmpty)
     }
 }
 
