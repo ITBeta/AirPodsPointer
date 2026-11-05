@@ -21,8 +21,7 @@
 ## 構建與運行
 ```bash
 git clone <this repo> && cd AirHeadMouse
-scripts/bundle.sh          # 生成 build/AirHeadMouse.app
-open build/AirHeadMouse.app
+scripts/bundle.sh          # 生成並啟動 build/AirHeadMouse.app（會先退出舊實例）
 ```
 > 必須以 `.app` 運行（不要用 `swift run`），否則系統不會彈出「運動與健身」權限。
 
@@ -41,6 +40,10 @@ open build/AirHeadMouse.app
 - 點頭/搖頭時光標會被帶動，識別成功後會自動還原到手勢開始前的位置。
 - 如果打開了 Music / Spotify / 瀏覽器視頻，耳機按壓可能被它們搶走 → 菜單裡點「重新獲取耳機按鍵」。
 - 本程序持續播放一段聽不見的極低電平噪聲（約 -80 dBFS）：既用來接收耳機按壓，也讓藍牙音頻鏈路保持活躍——AirPods 只有在音頻鏈路活躍時才推送頭部數據，所以不能用數字全零的靜音。聽音樂時耳機按鍵將由本程序接管。
+
+## 更新代碼後沒變化？
+舊版本還在菜單欄運行時，`open` 只會把舊進程帶到前台，新代碼不會生效。
+`scripts/bundle.sh` 會先自動退出舊實例再啟動新版，並打印構建號；菜單底部顯示的構建號應與之相同。
 
 ## 故障排查：轉頭光標不動
 打開菜單欄圖標 →「調試數據」，看這幾行：

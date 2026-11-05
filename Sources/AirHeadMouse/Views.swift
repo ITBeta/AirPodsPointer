@@ -63,6 +63,8 @@ struct MenuContentView: View {
                 Spacer()
                 Button("退出") { NSApp.terminate(nil) }
             }
+            Text("構建 \(Bundle.main.infoDictionary?["CFBundleVersion"] as? String ?? "?")")
+                .font(.caption2).foregroundStyle(.secondary)
         }
         .padding(14)
         .frame(width: 380)
