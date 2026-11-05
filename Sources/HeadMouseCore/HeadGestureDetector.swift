@@ -15,10 +15,13 @@ public struct HeadGestureEvent: Equatable, Sendable {
 public struct GestureConfig: Codable, Equatable, Sendable {
     public var nodEnabled = true
     public var shakeEnabled = true
-    /// 點頭判定的俯仰角速度閾值（弧度/秒）。≈ 86°/s
-    public var nodThreshold: Double = 1.5
-    /// 搖頭判定的偏航角速度閾值（弧度/秒）。≈ 100°/s
-    public var shakeThreshold: Double = 1.75
+    /// 點頭判定的俯仰角速度閾值（弧度/秒）。≈ 57°/s
+    public var nodThreshold: Double = 1.0
+    /// 搖頭判定的偏航角速度閾值（弧度/秒）。≈ 69°/s
+    public var shakeThreshold: Double = 1.2
+
+    public static let legacyNodThreshold: Double = 1.5
+    public static let legacyShakeThreshold: Double = 1.75
     public var nodWindow: Double = 0.7
     public var shakeWindow: Double = 1.1
     /// 搖頭需要的交替擺動次數（3 = 左右左）。
@@ -79,14 +82,30 @@ public struct HeadGestureDetector {
     /// 回溯量：手勢第一個波瓣之前的這段時間也算作手勢的一部分。
     public var leadIn: Double = 0.15
 
+    /// 最近 peakWindow 秒內兩軸的最大絕對角速度（供 UI 對照閾值調參）。
+    public var peakWindow: Double = 1.5
+    private var peakSamples: [(time: Double, yaw: Double, pitch: Double)] = []
+    public var recentPeak: (yaw: Double, pitch: Double) {
+        var y = 0.0, p = 0.0
+        for s in peakSamples { y = max(y, s.yaw); p = max(p, s.pitch) }
+        return (y, p)
+    }
+
     public init(config: GestureConfig = GestureConfig()) { self.config = config }
 
-    public mutating func reset() { pitch.clear(); yaw.clear(); cooldownUntil = -.infinity }
+    public mutating func reset() {
+        pitch.clear(); yaw.clear(); cooldownUntil = -.infinity
+        peakSamples.removeAll()
+    }
 
     /// 當前是否處於可能構成手勢的高速運動中（可用於暫停光標輸出）。
     public var isInFastMotion: Bool { pitch.active != nil || yaw.active != nil }
 
     public mutating func process(_ r: HeadRates) -> HeadGestureEvent? {
+        peakSamples.append((r.time, abs(r.yawRate), abs(r.pitchRate)))
+        if let i = peakSamples.firstIndex(where: { $0.time >= r.time - peakWindow }), i > 0 {
+            peakSamples.removeFirst(i)
+        }
         pitch.feed(rate: r.pitchRate, cross: r.yawRate, time: r.time, threshold: config.nodThreshold)
         yaw.feed(rate: r.yawRate, cross: r.pitchRate, time: r.time, threshold: config.shakeThreshold)
         pitch.prune(before: r.time - config.nodWindow)

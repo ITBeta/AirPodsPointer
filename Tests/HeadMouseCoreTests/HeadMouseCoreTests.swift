@@ -187,6 +187,20 @@ final class HeadGestureDetectorTests: XCTestCase {
         XCTAssertEqual(detectAll(&d, makeRates(duration: 1.2, pitch: segs)).count, 1)
     }
 
+    func testGentleNodDetected() {
+        var d = HeadGestureDetector()
+        let segs: [Seg] = [Seg(0.1, 0.25, -1.2), Seg(0.35, 0.25, 1.2)]
+        XCTAssertEqual(gestures(detectAll(&d, makeRates(duration: 1.0, pitch: segs))), [.nod])
+    }
+
+    func testRecentPeak() {
+        var d = HeadGestureDetector()
+        let segs: [Seg] = [Seg(0.0, 0.2, 0.9)]
+        _ = detectAll(&d, makeRates(duration: 0.5, pitch: segs))
+        XCTAssertEqual(d.recentPeak.pitch, 0.9, accuracy: 0.05)
+        XCTAssertEqual(d.recentPeak.yaw, 0, accuracy: 1e-9)
+    }
+
     func testDisabledGesture() {
         var c = GestureConfig()
         c.nodEnabled = false
@@ -289,6 +303,22 @@ final class SettingsTests: XCTestCase {
         XCTAssertEqual(s.action(for: .triplePress), .copy)
         XCTAssertEqual(s.action(for: .nod), .paste)
         XCTAssertEqual(s.action(for: .shake), .togglePause)
+    }
+
+    func testLegacyThresholdsMigrated() throws {
+        let json = #"{"version":1,"gestures":{"nodEnabled":true,"shakeEnabled":true,"nodThreshold":1.5,"shakeThreshold":1.75,"nodWindow":0.7,"shakeWindow":1.1,"shakeSwings":3,"cooldown":0.8}}"#
+        let s = try JSONDecoder().decode(AppSettings.self, from: Data(json.utf8))
+        XCTAssertEqual(s.gestures.nodThreshold, 1.0)
+        XCTAssertEqual(s.gestures.shakeThreshold, 1.2)
+        XCTAssertEqual(s.version, AppSettings.currentVersion)
+        XCTAssertTrue(s.autoReclaimMediaKeys)
+    }
+
+    func testCustomThresholdsKeptOnMigration() throws {
+        let json = #"{"gestures":{"nodEnabled":true,"shakeEnabled":true,"nodThreshold":2.2,"shakeThreshold":1.75,"nodWindow":0.7,"shakeWindow":1.1,"shakeSwings":3,"cooldown":0.8}}"#
+        let s = try JSONDecoder().decode(AppSettings.self, from: Data(json.utf8))
+        XCTAssertEqual(s.gestures.nodThreshold, 2.2)
+        XCTAssertEqual(s.gestures.shakeThreshold, 1.2)
     }
 
     func testMissingFieldsUseDefaults() throws {

@@ -45,7 +45,9 @@ struct MenuContentView: View {
             Text("最近事件：\(app.lastEvent)").font(.caption).foregroundStyle(.secondary)
 
             DisclosureGroup("調試數據", isExpanded: $app.showDebug) {
-                DiagnosticsView(d: app.live)
+                DiagnosticsView(d: app.live,
+                                nodThreshold: app.settings.gestures.nodThreshold,
+                                shakeThreshold: app.settings.gestures.shakeThreshold)
                 HStack {
                     Button("重啟頭部追蹤") { app.restartMotion() }
                     Button("運動與健身設置") { Permissions.openMotionSettings() }
@@ -91,6 +93,7 @@ struct SettingsView: View {
             Toggle("反轉垂直", isOn: $app.settings.pointer.invertY)
             slider("按壓延遲補償 (s)", \.pressLatency, 0...0.8, "%.2f")
             slider("點擊吸附半徑 (px)", \.snapRadius, 0...120, "%.0f")
+            Toggle("自動奪回耳機按鍵（防止音樂 App 搶走）", isOn: $app.settings.autoReclaimMediaKeys)
             Button("恢復默認設置") { app.resetSettings() }
         }
     }
@@ -113,13 +116,17 @@ struct SettingsView: View {
     private var gestureTab: some View {
         Form {
             Toggle("啟用點頭", isOn: $app.settings.gestures.nodEnabled)
-            slider("點頭速度閾值 (rad/s)", \.gestures.nodThreshold, 0.8...4, "%.2f")
+            slider("點頭速度閾值 (rad/s)", \.gestures.nodThreshold, 0.4...4, "%.2f")
+            Text(String(format: "最近點頭峰值：%.2f", app.live.peakPitch))
+                .font(.caption).foregroundStyle(app.live.peakPitch >= app.settings.gestures.nodThreshold ? Color.green : Color.secondary)
             Toggle("啟用搖頭", isOn: $app.settings.gestures.shakeEnabled)
-            slider("搖頭速度閾值 (rad/s)", \.gestures.shakeThreshold, 0.8...4, "%.2f")
+            slider("搖頭速度閾值 (rad/s)", \.gestures.shakeThreshold, 0.4...4, "%.2f")
+            Text(String(format: "最近搖頭峰值：%.2f", app.live.peakYaw))
+                .font(.caption).foregroundStyle(app.live.peakYaw >= app.settings.gestures.shakeThreshold ? Color.green : Color.secondary)
             Stepper("搖頭擺動次數：\(app.settings.gestures.shakeSwings)",
                     value: $app.settings.gestures.shakeSwings, in: 2...5)
             slider("觸發冷卻 (s)", \.gestures.cooldown, 0.2...2, "%.1f")
-            Text("閾值越高越不易誤觸，但需要更用力的動作。")
+            Text("先快速點頭/搖頭幾次，看上面的峰值，把閾值設到峰值的約 70%。閾值越高越不易誤觸。")
                 .font(.caption).foregroundStyle(.secondary)
         }
     }
@@ -163,6 +170,16 @@ struct SettingsView: View {
 
 struct DiagnosticsView: View {
     let d: LiveDiagnostics
+    var nodThreshold: Double = 1.0
+    var shakeThreshold: Double = 1.2
+
+    private func peakRow(_ k: String, _ peak: Double, _ threshold: Double) -> some View {
+        HStack(alignment: .top) {
+            Text(k).foregroundStyle(.secondary).frame(width: 130, alignment: .leading)
+            Text(String(format: "%.2f / %.2f", peak, threshold))
+                .foregroundStyle(peak >= threshold ? Color.green : Color.primary)
+        }
+    }
 
     private func deg(_ r: Double) -> String { String(format: "%+.1f°", r * 180 / .pi) }
     private func rate(_ r: Double) -> String { String(format: "%+.2f", r) }
@@ -178,6 +195,8 @@ struct DiagnosticsView: View {
             row("陀螺儀 x/y/z (rad/s)", "\(rate(d.sample.gyroX)) \(rate(d.sample.gyroY)) \(rate(d.sample.gyroZ))")
             row("數據來源", d.usingGyro ? "陀螺儀" : "姿態")
             row("角速度 yaw/pitch", "\(rate(d.yawRate)) \(rate(d.pitchRate))")
+            peakRow("點頭峰值 / 閾值", d.peakPitch, nodThreshold)
+            peakRow("搖頭峰值 / 閾值", d.peakYaw, shakeThreshold)
             row("本幀位移", "dx \(d.dx)  dy \(d.dy)")
             row("狀態", d.reason)
             if !d.motion.lastError.isEmpty { row("錯誤", d.motion.lastError) }

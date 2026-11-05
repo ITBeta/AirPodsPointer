@@ -51,6 +51,8 @@ public enum MouseAction: String, Codable, CaseIterable, Sendable {
 }
 
 public struct AppSettings: Codable, Equatable, Sendable {
+    public static let currentVersion = 2
+    public var version = AppSettings.currentVersion
     public var pointer = PointerConfig()
     public var gestures = GestureConfig()
     public var motion = MotionConfig()
@@ -61,6 +63,8 @@ public struct AppSettings: Codable, Equatable, Sendable {
     public var snapRadius: Double = 40
     /// 點擊後凍結光標的時間（秒）。
     public var clickFreeze: Double = 0.15
+    /// 定時重新成為 Now Playing，防止 Music 等 App 搶走耳機按鍵。
+    public var autoReclaimMediaKeys = true
 
     public static let defaultMapping: [Trigger: MouseAction] = [
         .singlePress: .leftClick,
@@ -85,5 +89,14 @@ public struct AppSettings: Codable, Equatable, Sendable {
         pressLatency = try c.decodeIfPresent(Double.self, forKey: .pressLatency) ?? d.pressLatency
         snapRadius = try c.decodeIfPresent(Double.self, forKey: .snapRadius) ?? d.snapRadius
         clickFreeze = try c.decodeIfPresent(Double.self, forKey: .clickFreeze) ?? d.clickFreeze
+        autoReclaimMediaKeys = try c.decodeIfPresent(Bool.self, forKey: .autoReclaimMediaKeys) ?? d.autoReclaimMediaKeys
+
+        // v1 → v2：手勢閾值默認值下調（僅當用戶沒改過時遷移）。
+        let stored = try c.decodeIfPresent(Int.self, forKey: .version) ?? 1
+        if stored < 2 {
+            if gestures.nodThreshold == GestureConfig.legacyNodThreshold { gestures.nodThreshold = d.gestures.nodThreshold }
+            if gestures.shakeThreshold == GestureConfig.legacyShakeThreshold { gestures.shakeThreshold = d.gestures.shakeThreshold }
+        }
+        version = AppSettings.currentVersion
     }
 }

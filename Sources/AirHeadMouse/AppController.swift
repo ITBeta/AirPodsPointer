@@ -16,6 +16,7 @@ final class AppController: ObservableObject {
         didSet {
             mapper.config = settings.pointer
             detector.config = settings.gestures
+            presses.autoReclaim = settings.autoReclaimMediaKeys
             if rateSource.config != settings.motion {
                 rateSource.config = settings.motion
                 rateSource.reset()
@@ -92,6 +93,7 @@ final class AppController: ObservableObject {
 
         presses.onPress = { [weak self] kind in self?.handle(press: kind) }
         presses.start()
+        presses.autoReclaim = settings.autoReclaimMediaKeys
     }
 
     func stop() {
@@ -138,7 +140,11 @@ final class AppController: ObservableObject {
         d.pitchRate = r.pitchRate
         d.dx = 0; d.dy = 0
 
-        if let g = detector.process(r) {
+        let gesture = detector.process(r)
+        let peak = detector.recentPeak
+        d.peakYaw = peak.yaw
+        d.peakPitch = peak.pitch
+        if let g = gesture {
             motionLog.info("gesture \(g.gesture.rawValue, privacy: .public)")
             handle(gesture: g)
             d.reason = "識別到\(g.gesture == .nod ? "點頭" : "搖頭")"
@@ -188,6 +194,8 @@ final class AppController: ObservableObject {
         if trackingEnabled, let p = history.position(at: g.startTime) { sink.move(to: p) }
         // 暫停時只響應「暫停/恢復」，避免誤觸其他動作。
         if !trackingEnabled && action != .togglePause { return }
+        // 提示音（暫停/恢復有自己的提示音）。
+        if action != .togglePause { NSSound(named: "Tink")?.play() }
         perform(action, trigger: trigger)
     }
 
@@ -289,4 +297,6 @@ struct LiveDiagnostics {
     var dx = 0
     var dy = 0
     var reason = "—"
+    var peakYaw = 0.0
+    var peakPitch = 0.0
 }
