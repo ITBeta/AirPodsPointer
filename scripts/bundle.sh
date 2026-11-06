@@ -14,7 +14,7 @@ BUNDLE_ID="com.example.airheadmouse"
 APP="build/AirHeadMouse.app"
 SIGN_ID="${SIGN_IDENTITY:--}"   # 默認 ad-hoc 簽名；可設 SIGN_IDENTITY="Apple Development: ..." 避免每次重建後重新授權
 BUILD_ID="$(date +%Y%m%d-%H%M%S)"
-VERSION="$(cat VERSION 2>/dev/null || echo unknown)"
+VERSION="$(cat VERSION 2>/dev/null || git rev-parse --short HEAD 2>/dev/null || echo unknown)"
 
 # 檢查源碼目錄是否乾淨：MANIFEST 列出的文件必須齊全，Sources/ 下不能有多餘的 .swift 文件。
 if [[ -f MANIFEST ]]; then
